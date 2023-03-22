@@ -21,7 +21,7 @@ async function getSSMParameterValue(var_name) {
 
 async function connectToDatabase() {
   try {
-    const monogoURL = await getSSMParameterValue("/stage/DATABASE_URL");
+    const monogoURL = await getSSMParameterValue("/prod/DATABASE_URL");
     if (!monogoURL) {
       return null;
     }
@@ -56,11 +56,9 @@ exports.handler = async (event, context, callback) => {
       .select("_id")
       .lean();
 
-    await Promise.all(
-      allOrganisations.map((el) => {
-        generateParticipactionReport(el._id);
-      })
-    );
+    for (i = 0; i < allOrganisations.length; i++) {
+      await generateParticipactionReport(allOrganisations[i]._id);
+    }
   } catch (err) {
     console.log(
       `Error in running generate participation report function at ${new Date()}`,
