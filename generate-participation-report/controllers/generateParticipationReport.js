@@ -7,6 +7,9 @@ const { convertObjectArrayToObject } = require("../utils/helper");
 
 const generateParticipactionReport = async (orgId) => {
   try {
+    const currentDate = new Date(
+      moment().utcOffset("+05:30").subtract(2, "hours")
+    );
     const teams = await Team.find({ orgId: orgId, active: true }).select(
       "_id members"
     );
