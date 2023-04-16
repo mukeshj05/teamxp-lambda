@@ -4,8 +4,8 @@ const SurveyReport = require("../models/surveyReport");
 const Category = require("../models/category");
 const SurveySession = require("../models/surveySession");
 const { convertObjectArrayToObject } = require("../utils/helper");
-const surveyOverallScoreCalculation = require("../utils/surveyOverallScoreCalculation");
-const surveyReportCalculation = require("../utils/surveyReportCalculation");
+const surveyOverallScoreCalculationNew = require("../utils/surveyOverallScoreCalculationNew");
+const surveyReportCalculationNew = require("../utils/surveyReportCalculationNew");
 
 const generateSurveyReport = async (orgId) => {
   try {
@@ -46,10 +46,14 @@ const generateSurveyReport = async (orgId) => {
       );
 
       // Fetch all sub categories
-      const categories = await Category.find().select("_id tag").lean();
+      const categories = await Category.find().select("_id tag parent").lean();
+
+      const parentCateogries = categories.filter(
+        (el) => !el.parent && el.tag !== "enps"
+      );
 
       // Convert sub categories array to object
-      const categoriesObj = convertObjectArrayToObject(categories, "_id");
+      const categoriesObjById = convertObjectArrayToObject(categories, "_id");
 
       // Get list of userIds and fetch all users
       const usersIds = reportDaySessions.map((el) => el.userId);
@@ -59,8 +63,8 @@ const generateSurveyReport = async (orgId) => {
       const usersObj = convertObjectArrayToObject(users, "_id");
 
       // Store tag answers in array for each team and organisation according to each session
-      const changes = {};
-      changes[orgId] = {};
+      const orgOrTeamChanges = {};
+      orgOrTeamChanges[orgId] = {};
 
       const teamIds = [
         ...new Set(
@@ -70,7 +74,7 @@ const generateSurveyReport = async (orgId) => {
         ),
       ];
 
-      // Report array to insert
+      // Report array for org and teams with changes to insert
       const reportsArray = [];
 
       reportsArray.push({
@@ -79,22 +83,14 @@ const generateSurveyReport = async (orgId) => {
         for: "O",
         date: Date.now(),
         overall: 0,
-        metrics: {
-          happiness: {},
-          relationWithManager: {},
-          recognition: {},
-          feedback: {},
-          personalGrowth: {},
-          alignment: {},
-          satisfaction: {},
-          relationWithPeers: {},
-          wellness: {},
-          ambassadorship: {},
-        },
+        metrics: parentCateogries.reduce(
+          (newObj, curObj) => ({ ...newObj, [curObj.tag]: {} }),
+          {}
+        ),
       });
 
       teamIds.forEach((team) => {
-        changes[team] = {};
+        orgOrTeamChanges[team] = {};
 
         reportsArray.push({
           orgId: orgId,
@@ -102,29 +98,23 @@ const generateSurveyReport = async (orgId) => {
           for: "T",
           date: Date.now(),
           overall: 0,
-          metrics: {
-            happiness: {},
-            relationWithManager: {},
-            recognition: {},
-            feedback: {},
-            personalGrowth: {},
-            alignment: {},
-            satisfaction: {},
-            relationWithPeers: {},
-            wellness: {},
-            ambassadorship: {},
-          },
+          metrics: parentCateogries.reduce(
+            (newObj, curObj) => ({ ...newObj, [curObj.tag]: {} }),
+            {}
+          ),
         });
       });
 
       reportDaySessions.forEach((session) => {
-        // create sub category tag object for current questions
+        // Modify report day session question to object of sub category tag and answer value
         const questions = session.questions
-          .filter((ques) => categoriesObj[ques.subCategory].tag !== "enps")
+          .filter((ques) => categoriesObjById[ques.subCategory].tag !== "enps")
           .map((ques) => ({
-            subCategoryTag: categoriesObj[ques.subCategory].tag,
-            answer: ques.answer,
+            subCategoryTag: categoriesObjById[ques.subCategory].tag,
+            answer: Number(ques.answer),
           }));
+
+        // create a new sub category tag object and calculate the avarage of each tag
         const tagObj = {};
         questions.forEach((ques) => {
           if (tagObj[ques.subCategoryTag]) {
@@ -135,49 +125,57 @@ const generateSurveyReport = async (orgId) => {
           }
         });
 
-        Object.entries(tagObj).forEach((tag) => {
-          if (changes[orgId][tag[0]]) {
-            changes[orgId][tag[0]].push(tag[1]);
+        // Update organization report array object with changes
+        Object.keys(tagObj).forEach((tag) => {
+          if (orgOrTeamChanges[orgId][tag]) {
+            orgOrTeamChanges[orgId][tag].push(tagObj[tag]);
           } else {
-            changes[orgId][tag[0]] = [tag[1]];
+            orgOrTeamChanges[orgId][tag] = [tagObj[tag]];
           }
         });
 
+        // Update teams report array object with changes according to users
         usersObj[session.userId].teams.forEach((team) => {
           if (team.teamId) {
-            Object.entries(tagObj).forEach((tag) => {
-              if (changes[team.teamId][tag[0]]) {
-                changes[team.teamId][tag[0]].push(tag[1]);
+            Object.keys(tagObj).forEach((tag) => {
+              if (orgOrTeamChanges[team.teamId][tag]) {
+                orgOrTeamChanges[team.teamId][tag].push(tagObj[tag]);
               } else {
-                changes[team.teamId][tag[0]] = [tag[1]];
+                orgOrTeamChanges[team.teamId][tag] = [tagObj[tag]];
               }
             });
           }
         });
       });
 
+      // Update reports array by calculating all reports
       reportsArray.forEach((el) => {
         if (!el.teamId) {
-          el.metrics = surveyReportCalculation(
+          el.metrics = surveyReportCalculationNew(
+            categories,
+            parentCateogries,
             el.metrics,
-            changes,
+            orgOrTeamChanges,
             orgId,
             allPrevDayReportsObj,
             "null"
           );
-          el.overall = surveyOverallScoreCalculation(el.metrics);
+          el.overall = surveyOverallScoreCalculationNew(el.metrics);
         } else {
-          el.metrics = surveyReportCalculation(
+          el.metrics = surveyReportCalculationNew(
+            categories,
+            parentCateogries,
             el.metrics,
-            changes,
+            orgOrTeamChanges,
             el.teamId,
             allPrevDayReportsObj,
             el.teamId
           );
-          el.overall = surveyOverallScoreCalculation(el.metrics);
+          el.overall = surveyOverallScoreCalculationNew(el.metrics);
         }
       });
 
+      // Get reprots for teams whose members are not having session in report day
       const teamsReportsNotChanged = allPrevDayReports.filter(
         (el) => el.teamId && !teamIds.includes(el.teamId.toString())
       );
